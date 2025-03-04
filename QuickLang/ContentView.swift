@@ -1,213 +1,272 @@
+// ContentView.swift
 import SwiftUI
 import Translation
 
 struct ContentView: View {
-    // Text input and output
-    @State private var sourceText = ""
-    @State private var translatedText: String?
+    // 入力テキストと翻訳結果の状態
+    @State private var sourceText: String = ""
+    @State private var translatedText: String? = nil
     
-    // Translation state
-    @State private var isTranslating = false
+    // 言語選択の状態
+    @State private var selectedSourceLanguage: LanguageOption = .auto
+    @State private var selectedTargetLanguage: LanguageOption = .japanese
+    
+    // 翻訳状態の管理
+    @State private var isTranslating: Bool = false
+    @State private var translationError: String? = nil
     @State private var config: TranslationSession.Configuration? = nil
     
-    // Language selection
-    @State private var sourceLanguage: Locale.Language? = nil // nil means auto-detect
-    @State private var targetLanguage: Locale.Language = Locale.current.language
+    // コピー状態
+    @State private var hasCopied: Bool = false
     
-    // Language model download
-    @State private var showingLanguageDownloadPrompt = false
-    @State private var languagePairToDownload: (source: Locale.Language?, target: Locale.Language)?
-    
-    // Translation service
-    @StateObject private var translationService = TranslationService()
-    
-    // Available languages from utility
-    let availableLanguages = LanguageUtils.getSupportedLanguages()
+    // 設定画面の状態
+    @State private var showLanguageAvailability: Bool = false
     
     var body: some View {
         VStack(spacing: 20) {
-            // Language selection section
-            HStack {
-                LanguageSelectionView(
-                    selectedLanguage: $sourceLanguage,
-                    languages: availableLanguages,
-                    includeAutoDetect: true,
-                    title: "Source Language"
-                )
-                
-                Spacer()
-                
-                // Swap languages button
-                Button(action: {
-                    let temp = sourceLanguage
-                    sourceLanguage = targetLanguage
-                    targetLanguage = temp ?? Locale.current.language
-                }) {
-                    Image(systemName: "arrow.left.arrow.right")
-                        .font(.title2)
-                }
-                .buttonStyle(.borderless)
-                .disabled(sourceLanguage == nil)
-                
-                Spacer()
-                
-                LanguageSelectionView(
-                    selectedLanguage: Binding(
-                        get: { targetLanguage },
-                        set: { if let lang = $0 { targetLanguage = lang } }
-                    ),
-                    languages: availableLanguages,
-                    includeAutoDetect: false,
-                    title: "Target Language"
-                )
-            }
-            .padding([.horizontal, .top])
+            // ツールバー
+            toolbarArea
             
-            // Source text input section
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Enter text to translate")
-                    .font(.headline)
-                
-                TextEditor(text: $sourceText)
-                    .font(.body)
-                    .frame(minHeight: 100)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                    )
-            }
-            .padding(.horizontal)
+            // 入力エリア
+            sourceInputArea
             
-            // Translate button section
-            HStack {
-                Button(action: {
-                    Task {
-                        // Check language model availability first
-                        let sourceToCheck = sourceLanguage ?? Locale.Language(languageCode: .english) // Default to English if auto-detect
-                        
-                        await translationService.checkAvailability(from: sourceToCheck, to: targetLanguage)
-                        
-                        if let status = translationService.availabilityStatus {
-                            switch status {
-                            case .installed:
-                                // Model is installed, proceed with translation
-                                config = TranslationSession.Configuration(source: sourceLanguage, target: targetLanguage)
-                            case .supported:
-                                // Model is supported but not installed, prompt for download
-                                languagePairToDownload = (sourceLanguage, targetLanguage)
-                                showingLanguageDownloadPrompt = true
-                            case .unsupported:
-                                // Language pair is not supported
-                                translatedText = "This language pair is not supported for translation."
-                            @unknown default:
-                                break
-                            }
-                        }
-                    }
-                }) {
-                    Text("Translate")
-                        .frame(minWidth: 100)
-                }
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(sourceText.isEmpty || isTranslating)
-                
-                if isTranslating {
-                    Button(action: {
-                        config?.invalidate()
-                        config = nil
-                        isTranslating = false
-                    }) {
-                        Text("Cancel")
-                            .frame(minWidth: 100)
-                    }
-                }
-            }
+            // 言語選択と翻訳ボタン
+            languageSelectionArea
             
-            // Translation result section
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text("Translation Result")
-                        .font(.headline)
-                    
-                    Spacer()
-                    
-                    if let text = translatedText, !text.isEmpty {
-                        Button(action: {
-                            let pasteboard = NSPasteboard.general
-                            pasteboard.clearContents()
-                            pasteboard.setString(text, forType: .string)
-                        }) {
-                            Label("Copy", systemImage: "doc.on.doc")
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                }
-                
-                ZStack(alignment: .center) {
-                    TextEditor(text: Binding(
-                        get: { translatedText ?? "" },
-                        set: { translatedText = $0 }
-                    ))
-                    .font(.body)
-                    .frame(minHeight: 100)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-                    )
-                    
-                    if isTranslating {
-                        ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle())
-                            .scaleEffect(1.5)
-                    }
-                }
-            }
-            .padding(.horizontal)
+            // 翻訳結果エリア
+            translationResultArea
         }
-        .padding(.bottom)
+        .padding()
+        // シートの表示設定
+        .sheet(isPresented: $showLanguageAvailability) {
+            LanguageAvailabilityView(
+                sourceLanguage: selectedSourceLanguage,
+                targetLanguage: selectedTargetLanguage,
+                onDismiss: { showLanguageAvailability = false }
+            )
+        }
+        // 翻訳タスクの設定
         .translationTask(config) { session in
             Task { @MainActor in
                 do {
-                    isTranslating = true
-                    let response = try await session.translate(sourceText)
-                    translatedText = response.targetText
-                    isTranslating = false
-                    config = nil // Reset config after successful translation
+                    if !sourceText.isEmpty {
+                        isTranslating = true
+                        translationError = nil
+                        
+                        // 翻訳を実行
+                        let response = try await session.translate(sourceText)
+                        translatedText = response.targetText
+                        
+                        isTranslating = false
+                    }
                 } catch {
-                    translatedText = "Translation error: \(error.localizedDescription)"
-                    isTranslating = false
-                    config = nil
+                    handleTranslationError(error)
                 }
             }
         }
-        .alert("Download Translation Model", isPresented: $showingLanguageDownloadPrompt) {
-            Button("Download") {
-                if let pair = languagePairToDownload {
-                    let newConfig = TranslationSession.Configuration(source: pair.source, target: pair.target)
-                    config = newConfig
-                }
-                showingLanguageDownloadPrompt = false
-            }
-            Button("Cancel", role: .cancel) {
-                showingLanguageDownloadPrompt = false
-            }
-        } message: {
-            Text("The translation model for this language pair needs to be downloaded. Would you like to download it now?")
+    }
+    
+    // 入力テキストエリア
+    private var sourceInputArea: some View {
+        VStack(alignment: .leading) {
+            Text("翻訳するテキスト")
+                .font(.headline)
+            
+            TextEditor(text: $sourceText)
+                .font(.body)
+                .frame(minHeight: 120)
+                .padding(8)
+                .background(Color(.textBackgroundColor))
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                )
         }
-        .alert(
-            "Translation Error",
-            isPresented: Binding(
-                get: { translationService.errorMessage != nil },
-                set: { if !$0 { translationService.errorMessage = nil } }
+    }
+    
+    // 言語選択エリア
+    private var languageSelectionArea: some View {
+        HStack(spacing: 20) {
+            // ソース言語選択
+            VStack(alignment: .leading) {
+                Text("元の言語")
+                    .font(.headline)
+                Picker("", selection: $selectedSourceLanguage) {
+                    ForEach(LanguageOption.sourceOptions, id: \.self) { option in
+                        Text(option.displayName).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(minWidth: 150)
+            }
+            
+            // 矢印
+            Image(systemName: "arrow.right")
+                .foregroundColor(.secondary)
+            
+            // ターゲット言語選択
+            VStack(alignment: .leading) {
+                Text("翻訳先")
+                    .font(.headline)
+                Picker("", selection: $selectedTargetLanguage) {
+                    ForEach(LanguageOption.targetOptions, id: \.self) { option in
+                        Text(option.displayName).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(minWidth: 150)
+            }
+            
+            Spacer()
+            
+            // 翻訳ボタン
+            Button(action: toggleTranslation) {
+                if isTranslating {
+                    Text("キャンセル")
+                } else {
+                    Text("翻訳")
+                }
+            }
+            .keyboardShortcut(.return, modifiers: .command)
+            .buttonStyle(.borderedProminent)
+            .disabled(sourceText.isEmpty)
+        }
+    }
+    
+    // 翻訳結果エリア
+    private var translationResultArea: some View {
+        VStack(alignment: .leading) {
+            HStack {
+                Text("翻訳結果")
+                    .font(.headline)
+                
+                Spacer()
+                
+                if let _ = translatedText, !isTranslating {
+                    Button(action: copyToClipboard) {
+                        Label(hasCopied ? "コピー済み" : "コピー", systemImage: hasCopied ? "checkmark" : "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            
+            ZStack(alignment: .topLeading) {
+                // 背景
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(.textBackgroundColor))
+                    .frame(minHeight: 120)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                    )
+                
+                // コンテンツ
+                Group {
+                    if isTranslating {
+                        VStack {
+                            Spacer()
+                            ProgressView("翻訳中...")
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity)
+                    } else if let error = translationError {
+                        Text(error)
+                            .foregroundColor(.red)
+                            .padding()
+                    } else if let result = translatedText {
+                        ScrollView {
+                            Text(result)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                                .padding()
+                        }
+                    } else {
+                        Text("翻訳結果がここに表示されます")
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding()
+                    }
+                }
+            }
+        }
+    }
+    
+    // 翻訳トグル機能
+    private func toggleTranslation() {
+        if isTranslating {
+            // 翻訳中の場合はキャンセル
+            config?.invalidate()
+            config = nil
+            isTranslating = false
+        } else {
+            // 新しい翻訳を開始
+            startTranslation()
+        }
+    }
+    
+    // 翻訳開始
+    private func startTranslation() {
+        if sourceText.isEmpty {
+            return
+        }
+        
+        // 重要: いったん設定をnilにして値の変更をトリガーする
+        config = nil
+        
+        // UIの更新を確実にするため、次のランループまで待つ
+        DispatchQueue.main.async {
+            // 源言語と対象言語のLocale.Languageオブジェクトを取得
+            let sourceLang = self.selectedSourceLanguage.localeLanguage
+            let targetLang = self.selectedTargetLanguage.localeLanguage
+            
+            // 新しいTranslationSession.Configurationを作成
+            self.config = TranslationSession.Configuration(
+                source: sourceLang,
+                target: targetLang
             )
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(translationService.errorMessage ?? "An unknown error occurred")
         }
+    }
+    
+    // クリップボードにコピー
+    private func copyToClipboard() {
+        guard let textToCopy = translatedText else { return }
+        
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(textToCopy, forType: .string)
+        
+        // コピー通知を表示して数秒後に消す
+        hasCopied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            hasCopied = false
+        }
+    }
+    
+    // ツールバーエリア
+    private var toolbarArea: some View {
+        HStack {
+            Spacer()
+            
+            Button(action: {
+                showLanguageAvailability = true
+            }) {
+                Label("言語の設定", systemImage: "gear")
+            }
+            .buttonStyle(.borderless)
+        }
+    }
+    
+    // エラーハンドリング
+    private func handleTranslationError(_ error: Error) {
+        isTranslating = false
+        translationError = TranslationManager.userFriendlyErrorMessage(for: error)
     }
 }
 
-#Preview {
-    ContentView()
+// プレビュー
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
+    }
 }
